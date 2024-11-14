@@ -66,26 +66,27 @@ class RosUwbTwr_plugin : public ModelPlugin
 {
 public:
   RosUwbTwr_plugin();
-  virtual ~RosUwbTwr_plugin();
+  virtual ~RosUwbTwr_plugin() = default;
 
   struct config_t
   {
-    float nlosSoftWallWidth = 0.1;
-    float maxRange = 80.0;         // [m]
-    float constantBias = 0.0;      // d: z = k*x + d  + noise [m]
-    float distanceBasedBias = 1.0; // k: z = k*x + d  + noise [m]
-    float twrRate = 10.0;          // [Hz]. Max possible number of Twr measurements per second
-    float twrNoise = 0.1;          // standard deviation in [m]
-    float refreshRateIDs = 0.1;    // [Hz] rate
+    float nlosSoftWallWidth = 0.1f;
+    float maxRange = 80.0f;         // [m]
+    float constantBias = 0.0f;      // d: z = k*x + d  + noise [m]
+    float distanceBasedBias = 1.0f; // k: z = k*x + d  + noise [m]
+    float twrRate = 10.0f;          // [Hz]. Max possible number of Twr measurements per second
+    float twrNoise = 0.1f;          // standard deviation in [m]
+    float refreshRateIDs = 0.1f;    // [Hz] rate
     std::string twrTopic = "/twr";
     std::string deviceIdTopic = "/TWR_device_IDs";
     std::string requestIdTopic = "/TWR_request_IDs";
-    std::string modelPrefix = "twr";
+    std::string linkPrefix = "twr";
     std::string robot_namespace = "";
     uint deviceId = 0;
     bool allBeaconsAreLOS = false;
     bool useRangingIDs = true;
     bool useRoundRobin = true; // per update only one range to one device in the list is computed
+    bool verbose = false;
 
     ignition::math::Vector3d antenna_offset = ignition::math::Vector3d::Zero;
   };
@@ -118,6 +119,7 @@ private:
   std::string namespace_;
   physics::ModelPtr model_;
   physics::WorldPtr world_;
+  physics::LinkPtr link_;
   ros::NodeHandlePtr node_handle_;
   std::thread deferred_load_thread_;
   ros::Publisher pub_twr_;
@@ -129,8 +131,8 @@ private:
   std::default_random_engine random_generator_;
   std::normal_distribution<double> standard_normal_distribution_;
   size_t ranging_cnt_ = 0;
-  physics::RayShapePtr firstRay,
-      secondRay; /// rays between the antennas A and B, ray A->B, ray B->A
+  physics::RayShapePtr firstRay_,
+      secondRay_; /// rays between the antennas A and B, ray A->B, ray B->A
 
   /// Request and response device IDs;
   ros::Subscriber subRequestIDs_; /// subsrcibing to global topic /request_IDs - std_msgs::bool
@@ -142,8 +144,8 @@ private:
   struct deviceInfo_t
   {
     common::Time last_update;
-    physics::EntityPtr entity_ptr;
-    std::string model_name = "";
+    boost::weak_ptr<physics::Entity> entity_ptr;
+    std::string link_name = "";
   };
 
   std::map<size_t, deviceInfo_t> dict_device_ids_;
@@ -156,16 +158,7 @@ private:
 RosUwbTwr_plugin::RosUwbTwr_plugin()
     : ModelPlugin()
 {
-  gzmsg << "RosUwbTwr_plugin::CTOR()" << std::endl;
-}
-
-RosUwbTwr_plugin::~RosUwbTwr_plugin()
-{
-  deferred_load_thread_.join();
-  if (node_handle_) {
-    node_handle_->shutdown();
-  }
-  update_connection_->~Connection();
+  //gzmsg << "RosUwbTwr_plugin::CTOR()" << std::endl;
 }
 
 void RosUwbTwr_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
@@ -174,13 +167,30 @@ void RosUwbTwr_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
   world_ = model_->GetWorld();
   last_pub_time_ = world_->SimTime();
   last_ID_update_request_ = last_pub_time_;
-  gzmsg << "RosUwbTwr_plugin::Load(): ..." << std::endl;
 
   unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   random_generator_ = std::default_random_engine(seed);
   standard_normal_distribution_ = std::normal_distribution<double>(0.0, 1.0);
+
+  firstRay_ = boost::dynamic_pointer_cast<physics::RayShape>(
+      world_->Physics()->CreateShape("ray", physics::CollisionPtr()));
+
+  secondRay_ = boost::dynamic_pointer_cast<physics::RayShape>(
+      world_->Physics()->CreateShape("ray", physics::CollisionPtr()));
   // load parameters from Sdf
   get_sdf_params(_sdf);
+
+  std::string link_name = std::string(config_.linkPrefix + "_" + std::to_string(config_.deviceId));
+  for (auto &link_ptr : model_->GetLinks()) {
+    if (link_ptr->GetName().find(link_name) != std::string::npos) {
+      link_ = link_ptr;
+    }
+  }
+
+  GZ_ASSERT(link_,
+            "RosUwbTwr_plugin::Load(" + std::to_string(config_.deviceId)
+                + "): FAILURE! Could not find a link containing [" + link_name
+                + "] attached to model  " + model_->URI().Str());
 
   // Init ROS
   if (ros::isInitialized()) {
@@ -188,17 +198,16 @@ void RosUwbTwr_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
     // ros callback queue for processing subscription
     deferred_load_thread_ = std::thread(std::bind(&RosUwbTwr_plugin::LoadThread, this));
     deferred_load_thread_.detach();
-    twr_msg_.header.frame_id = model_->GetName();
+    std::string link_name = std::string(config_.linkPrefix + "_" + std::to_string(config_.deviceId));
+    twr_msg_.header.frame_id = model_->GetName() + "/" + link_->GetName();
   } else {
     gzerr << "Not loading plugin since ROS hasn't been "
           << "properly initialized.  Try starting gazebo with ros plugin:\n"
           << "  gazebo -s libgazebo_ros_api_plugin.so\n";
   }
-  gzwarn << "RosUwbTwr_plugin::Load(): URI=" << model_->URI().Str()
-         << ", parent model name=" << model_->GetName() << ", this name=" << this->handleName
-         << " DONE! \n";
-
-  printf("[%s] RosUwbTwr_plugin: CNS plugin initialized\n", namespace_.c_str());
+  gzmsg << "RosUwbTwr_plugin::Load(): URI=" << link_->URI().Str()
+        << ", parent model name=" << model_->GetName() << ", link name=" << link_->GetName()
+        << " DONE! \n";
 
   // Listen to the update event. This event is broadcast every simulation iteration.
   update_connection_ = event::Events::ConnectWorldUpdateBegin(
@@ -224,7 +233,7 @@ void RosUwbTwr_plugin::LoadThread()
                                       &RosUwbTwr_plugin::callback_request_IDs,
                                       this);
 
-  ROS_INFO_STREAM("RosUwbTwr_plugin::Load(): uwb twr plugin subscribed " << config_.twrTopic);
+  ROS_INFO_STREAM("RosUwbTwr_plugin::Load(): uwb twr plugin published at: " << config_.twrTopic);
 
   request_device_IDs();
 }
@@ -236,8 +245,11 @@ void RosUwbTwr_plugin::OnUpdate(const common::UpdateInfo &_info)
   // time for an update?
   if (dt > (1.0f / config_.twrRate)) {
     last_pub_time_ = _info.simTime;
-    ignition::math::Pose3d antenna_pose_1 = compute_antenna_pose(model_, config_.antenna_offset);
+    ignition::math::Pose3d antenna_pose_1 = compute_antenna_pose(link_, config_.antenna_offset);
 
+    ROS_INFO_STREAM_COND(config_.verbose,
+                         "RosUwbTwr_plugin[" << config_.deviceId
+                                             << "]::OnUpdate(): antenna pose=" << antenna_pose_1);
     // "with whom to range" IDs!
     std::vector<size_t> rangingIDs;
     if (config_.useRangingIDs && rangingIDs_.size()) {
@@ -247,6 +259,10 @@ void RosUwbTwr_plugin::OnUpdate(const common::UpdateInfo &_info)
       for (auto const &elem : dict_device_ids_) {
         rangingIDs.push_back(elem.first);
       }
+    }
+    if (!rangingIDs.size()) {
+      ROS_INFO_STREAM_COND(config_.verbose,
+                           "RosUwbTwr_plugin[" << config_.deviceId << "] no IDs for ranging...");
     }
 
     // one by one (round robin) or all at once
@@ -261,6 +277,10 @@ void RosUwbTwr_plugin::OnUpdate(const common::UpdateInfo &_info)
         std::pair<double, bool> meas = compute_range(antenna_pose_1, *it);
         if (meas.first > 0 && meas.first < config_.maxRange) {
           publish_range(apply_twr_model(meas.first), meas.first, meas.second, *it);
+        } else {
+          ROS_INFO_STREAM_COND(config_.verbose,
+                               "RosUwbTwr_plugin[" << config_.deviceId
+                                                   << "]: distance out of bounds!");
         }
       }
     } else {
@@ -271,6 +291,10 @@ void RosUwbTwr_plugin::OnUpdate(const common::UpdateInfo &_info)
           std::pair<double, bool> meas = compute_range(antenna_pose_1, elem);
           if (meas.first > 0 && meas.first < config_.maxRange) {
             publish_range(apply_twr_model(meas.first), meas.first, meas.second, elem);
+          } else {
+            ROS_INFO_STREAM_COND(config_.verbose,
+                                 "RosUwbTwr_plugin[" << config_.deviceId
+                                                     << "]: distance out of bounds!");
           }
         }
       }
@@ -281,6 +305,7 @@ void RosUwbTwr_plugin::OnUpdate(const common::UpdateInfo &_info)
   // time for an update?
   if (dt > (1.0f / config_.refreshRateIDs)) {
     request_device_IDs();
+    check_device_IDs();
   }
 }
 
@@ -297,11 +322,20 @@ std::pair<double, bool> RosUwbTwr_plugin::compute_range(ignition::math::Pose3d &
                                                         const size_t other_id)
 {
   auto it = dict_device_ids_.find(other_id);
-  if (it != dict_device_ids_.end()) {
-    ignition::math::Pose3d pose_GB = compute_antenna_pose(it->second.entity_ptr,
-                                                          config_.antenna_offset);
+  if (it != dict_device_ids_.end() && !it->second.entity_ptr.expired()) {
+    // https://en.cppreference.com/w/cpp/memory/weak_ptr
+    // we have to make a copy of shared pointer before usage:
+    physics::EntityPtr entity_ptr = it->second.entity_ptr.lock();
+    ignition::math::Pose3d pose_GB = compute_antenna_pose(entity_ptr, config_.antenna_offset);
+
+    ROS_INFO_STREAM_COND(config_.verbose,
+                         "RosUwbTwr_plugin[" << config_.deviceId << "]::compute_range( ["
+                                             << other_id << "]): other antenna pose=" << pose_GB);
 
     double distance = pose_GA.Pos().Distance(pose_GB.Pos());
+    ROS_INFO_STREAM_COND(config_.verbose,
+                         "RosUwbTwr_plugin[" << config_.deviceId << "]::compute_range( ["
+                                             << other_id << "]): distance=" << distance);
     bool LOS = true;
     if (!config_.allBeaconsAreLOS) {
       //We check if a ray can reach the anchor:
@@ -309,9 +343,9 @@ std::pair<double, bool> RosUwbTwr_plugin::compute_range(ignition::math::Pose3d &
       std::string obstacleName;
 
       ignition::math::Vector3d p_AB_in_G_normed = (pose_GB.Pos() - pose_GA.Pos()).Normalize();
-      firstRay->Reset();
-      firstRay->SetPoints(pose_GA.Pos(), pose_GB.Pos());
-      firstRay->GetIntersection(distanceToObstacleFromA, obstacleName);
+      firstRay_->Reset();
+      firstRay_->SetPoints(pose_GA.Pos(), pose_GB.Pos());
+      firstRay_->GetIntersection(distanceToObstacleFromA, obstacleName);
       if (obstacleName.compare("") != 0) {
         // There is an obstacle:
         // We use a second ray to measure the distance from anchor to tag ot compute the width of the obstacle
@@ -319,14 +353,26 @@ std::pair<double, bool> RosUwbTwr_plugin::compute_range(ignition::math::Pose3d &
         double distanceToObstacleFromB;
         std::string otherObstacleName;
 
-        this->secondRay->Reset();
-        this->secondRay->SetPoints(pose_GB.Pos(), pose_GA.Pos());
-        this->secondRay->GetIntersection(distanceToObstacleFromB, otherObstacleName);
+        this->secondRay_->Reset();
+        this->secondRay_->SetPoints(pose_GB.Pos(), pose_GA.Pos());
+        this->secondRay_->GetIntersection(distanceToObstacleFromB, otherObstacleName);
         double obstacle_width = distance - (distanceToObstacleFromA + distanceToObstacleFromB);
         if (obstacle_width > config_.nlosSoftWallWidth
             || obstacleName.compare(otherObstacleName) != 0) {
           //We try to find a rebound to reach the B from A
           LOS = false;
+          ROS_INFO_STREAM_COND(config_.verbose,
+                               "RosUwbTwr_plugin[" << config_.deviceId << "]::compute_range( ["
+                                                   << other_id << "]): WIDE obstacle ("
+                                                   << obstacleName << ", d=" << obstacle_width
+                                                   << ")");
+
+        } else {
+          ROS_INFO_STREAM_COND(config_.verbose,
+                               "RosUwbTwr_plugin[" << config_.deviceId << "]::compute_range( ["
+                                                   << other_id << "]): THIN obstacle ("
+                                                   << obstacleName << ", d=" << obstacle_width
+                                                   << ")");
         }
       }
     }
@@ -340,12 +386,15 @@ void RosUwbTwr_plugin::publish_range(const double range_raw,
                                      const bool LOS,
                                      const size_t other_id)
 {
+  twr_msg_.header.stamp = ros::Time(last_pub_time_.sec, last_pub_time_.nsec);
+  twr_msg_.header.seq++;
   twr_msg_.range_corr = range_gt;
   twr_msg_.range_raw = range_raw;
   twr_msg_.LOS = LOS;
   twr_msg_.R = config_.twrNoise * config_.twrNoise;
   twr_msg_.UWB_ID1 = config_.deviceId;
   twr_msg_.UWB_ID2 = other_id;
+  pub_twr_.publish(twr_msg_);
 }
 
 double RosUwbTwr_plugin::apply_twr_model(const double _gt_range)
@@ -366,17 +415,18 @@ void RosUwbTwr_plugin::get_sdf_params(sdf::ElementPtr _sdf)
   getSdfParam(_sdf, "twrTopic", config_.twrTopic, std::string("/twr"));
   getSdfParam(_sdf, "deviceIdTopic", config_.deviceIdTopic, std::string("/TWR_device_IDs"));
   getSdfParam(_sdf, "requestIdTopic", config_.requestIdTopic, std::string("/TWR_request_IDs"));
-  getSdfParam(_sdf, "modelPrefix", config_.modelPrefix, std::string("twr"));
+  getSdfParam(_sdf, "modelPrefix", config_.linkPrefix, std::string("twr"));
   getSdfParam(_sdf, "robot_namespace", config_.robot_namespace, std::string(""));
   getSdfParam(_sdf, "deviceId", config_.deviceId, uint(0));
   getSdfParam(_sdf, "allBeaconsAreLOS", config_.allBeaconsAreLOS, false);
   getSdfParam(_sdf, "useRangingIDs", config_.useRangingIDs, true);
   getSdfParam(_sdf, "useRoundRobin", config_.useRoundRobin, true);
+  getSdfParam(_sdf, "verbose", config_.verbose, true);
   {
     float x, y, z;
     getSdfParam(_sdf, "antenna_offset_x", x, 0.0f);
-    getSdfParam(_sdf, "antenna_offset_x", y, 0.0f);
-    getSdfParam(_sdf, "antenna_offset_x", z, 0.0f);
+    getSdfParam(_sdf, "antenna_offset_y", y, 0.0f);
+    getSdfParam(_sdf, "antenna_offset_z", z, 0.0f);
     config_.antenna_offset.Set(x, y, z);
   }
 }
@@ -401,7 +451,12 @@ void RosUwbTwr_plugin::callback_device_ID(std_msgs::UInt64ConstPtr msg)
     } else {
       // update timestamp of known device...
       dict_device_ids_.find(msg->data)->second.last_update = world_->SimTime();
+      ROS_INFO_COND(config_.verbose,
+                    "UwbTwr_Plugin[%u]::callback_device_ID([%zu]): update timestamp...",
+                    config_.deviceId,
+                    msg->data);
     }
+    check_device_IDs();
   }
 }
 
@@ -415,6 +470,8 @@ void RosUwbTwr_plugin::callback_request_IDs(std_msgs::BoolConstPtr msg)
 
 void RosUwbTwr_plugin::request_device_IDs()
 {
+  ROS_INFO_STREAM_COND(config_.verbose,
+                       "RosUwbTwr_plugin[" << config_.deviceId << "]::request_device_IDs()");
   std_msgs::Bool request;
   request.data = true;
   pubRequestIDs_.publish(request);
@@ -424,40 +481,39 @@ void RosUwbTwr_plugin::add_device(const size_t device_id)
 {
   deviceInfo_t info;
   info.last_update = world_->SimTime();
-  info.model_name = "";
+  info.link_name = "";
 
   // find the Gazebo model name:
-  std::string model_name_prefix = std::string(config_.modelPrefix + "_" + std::to_string(device_id));
+  std::string link_name = std::string(config_.linkPrefix + "_" + std::to_string(device_id));
   for (auto &model_ptr : world_->Models()) {
-    if (model_ptr->GetName().find(model_name_prefix) != std::string::npos) {
-      info.model_name = model_ptr->GetName();
-      info.entity_ptr = model_ptr;
-      break;
-    } else if (model_ptr != this->model_) {
+    // scan for links that are not part of the model to range with:
+    if (model_ptr != this->model_) {
       for (auto &link_ptr : model_ptr->GetLinks()) {
-        //ROS_DEBUG("UwbTwr_Plugin[%u]::add_device([%zu]): link name=%s",
-        //         config_.deviceId,
-        //         device_id,
-        //         link_ptr->GetName().c_str());
-        if (link_ptr->GetName().find(model_name_prefix) != std::string::npos) {
-          info.model_name = link_ptr->GetName();
+        ROS_INFO_COND(config_.verbose,
+                      "UwbTwr_Plugin[%u]::add_device([%zu]): link name=%s",
+                      config_.deviceId,
+                      device_id,
+                      link_ptr->GetName().c_str());
+        if (link_ptr->GetName().find(link_name) != std::string::npos) {
+          info.link_name = link_ptr->GetName();
           info.entity_ptr = link_ptr;
           break;
         }
       }
     }
   }
-  if (!info.model_name.empty()) {
+  if (!info.link_name.empty()) {
     dict_device_ids_.insert({device_id, info});
     ROS_INFO("UwbTwr_Plugin[%u]::add_device([%zu]): new device [%s] added",
              config_.deviceId,
              device_id,
-             info.model_name.c_str());
+             info.link_name.c_str());
   } else {
-    //ROS_DEBUG("UwbTwr_Plugin[%u]::add_device([%zu]): model_name empty for prefix [%s]!",
-    //          config_.deviceId,
-    //          device_id,
-    //          model_name_prefix.c_str());
+    ROS_INFO_COND(config_.verbose,
+                  "UwbTwr_Plugin[%u]::add_device([%zu]): model_name empty for prefix [%s]!",
+                  config_.deviceId,
+                  device_id,
+                  link_name.c_str());
   }
 }
 
@@ -472,17 +528,21 @@ void RosUwbTwr_plugin::check_device_IDs()
 {
   std::vector<size_t> removeIDs;
   auto curr_time = world_->SimTime();
-  for(auto elem : dict_device_ids_) {
-    auto dt = curr_time - elem.second.last_update;
-    if (dt.Float() > 0.5 / config_.refreshRateIDs) {
+  for (auto &elem : dict_device_ids_) {
+    float dt = (curr_time - elem.second.last_update).Float();
+    if (dt > (2.0f / config_.refreshRateIDs)) {
       removeIDs.push_back(elem.first);
+      ROS_INFO("UwbTwr_Plugin[%u]::check_device_IDs: remove device with ID [%zu] as dt=%f",
+               config_.deviceId,
+               elem.first,
+               dt);
     }
   }
   for(auto id : removeIDs) {
     auto it = dict_device_ids_.find(id);
     if (it != dict_device_ids_.end()) {
       dict_device_ids_.erase(it);
-      ROS_INFO("UwbTwr_Plugin[%u]::check_device_IDs: device with ID [%zu] removed by ",
+      ROS_INFO("UwbTwr_Plugin[%u]::check_device_IDs: device with ID [%zu] removed!",
                config_.deviceId,
                id);
     }
