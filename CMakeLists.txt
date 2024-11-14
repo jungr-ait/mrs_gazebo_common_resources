@@ -12,6 +12,7 @@ set(CATKIN_DEPENDENCIES
   tf2
   tf2_msgs
   tf2_ros
+  uwb_msgs
   )
 
 ## Find catkin macros and libraries
@@ -102,6 +103,7 @@ set(LIBRARIES
   MrsGazeboCommonResources_MotorSpeedRepublisherPlugin
   MrsGazeboCommonResources_MotorPropModelPlugin
   MrsGazeboCommonResources_LinkStaticTFPublisher
+  MrsGazeboCommonResources_RosUwbTwrPlugin
   )
 
 catkin_package(
@@ -379,6 +381,17 @@ add_library(MrsGazeboCommonResources_LinkStaticTFPublisher SHARED
   )
 
 target_link_libraries(MrsGazeboCommonResources_LinkStaticTFPublisher
+  ${GAZEBO_LIBRARIES}
+  ${catkin_LIBRARIES}
+  ${Boost_LIBRARIES}
+  )
+
+# UwbTwrPlugin
+add_library(MrsGazeboCommonResources_RosUwbTwrPlugin SHARED
+  src/sensor_and_model_plugins/RosUwbTwr_plugin.cpp
+  )
+
+target_link_libraries(MrsGazeboCommonResources_RosUwbTwrPlugin
   ${GAZEBO_LIBRARIES}
   ${catkin_LIBRARIES}
   ${Boost_LIBRARIES}

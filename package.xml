@@ -20,6 +20,7 @@
   <depend>tf2</depend>
   <depend>tf2_msgs</depend>
   <depend>tf2_ros</depend>
+  <depend>uwb_msgs</depend>
 
   <depend>gazebo</depend>
   <depend>boost</depend>
