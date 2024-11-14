@@ -62,6 +62,9 @@
 
 namespace gazebo {
 
+/**
+ * @brief The RosUwbTwr_plugin class: A model plugin that refers to the pose of a model's link according to the naming convention: <linkPrefix>_<deviceID> using the parameters provided to the plugin (all parameters are listed in config_t.   
+ */
 class RosUwbTwr_plugin : public ModelPlugin
 {
 public:
@@ -70,25 +73,27 @@ public:
 
   struct config_t
   {
-    float nlosSoftWallWidth = 0.1f;
+    float nlosSoftWallWidth = 0.1f; // [m] tollerated obstacle with
     float maxRange = 80.0f;         // [m]
     float constantBias = 0.0f;      // d: z = k*x + d  + noise [m]
     float distanceBasedBias = 1.0f; // k: z = k*x + d  + noise [m]
     float twrRate = 10.0f;          // [Hz]. Max possible number of Twr measurements per second
-    float twrNoise = 0.1f;          // standard deviation in [m]
+    float twrNoise = 0.1f;          // noise: standard deviation in [m]
     float refreshRateIDs = 0.1f;    // [Hz] rate
     std::string twrTopic = "/twr";
-    std::string deviceIdTopic = "/TWR_device_IDs";
-    std::string requestIdTopic = "/TWR_request_IDs";
-    std::string linkPrefix = "twr";
-    std::string robot_namespace = "";
-    uint deviceId = 0;
-    bool allBeaconsAreLOS = false;
-    bool useRangingIDs = true;
+    std::string rangingIDsTopic = "/ranging_IDs";
+    std::string deviceIdTopic = "/TWR_device_IDs"; // topic to exchange unique ranging device ids
+    std::string requestIdTopic
+        = "/TWR_request_IDs";       // flag to request ranging device ids to be published
+    std::string linkPrefix = "twr"; // prefix in the ranging devices unique link names
+    uint deviceId = 0;              // unique id of the ranging device
+    bool allBeaconsAreLOS = false;  // do not consider occlusions
+    bool useRangingIDs = true;      // use a list of ranging ids
     bool useRoundRobin = true; // per update only one range to one device in the list is computed
-    bool verbose = false;
+    bool verbose = false;      // enables more ROS_INFO prints
 
-    ignition::math::Vector3d antenna_offset = ignition::math::Vector3d::Zero;
+    ignition::math::Vector3d antenna_offset
+        = ignition::math::Vector3d::Zero; // offset of the antenna from the links origin.
   };
 
 protected:
@@ -122,7 +127,8 @@ private:
   physics::LinkPtr link_;
   ros::NodeHandlePtr node_handle_;
   std::thread deferred_load_thread_;
-  ros::Publisher pub_twr_;
+  ros::Publisher
+      pub_twr_; /// advertising at global topic config_.twrTopic - uwb_msgs::TwoWayRangeStamped
   uwb_msgs::TwoWayRangeStamped twr_msg_;
 
   event::ConnectionPtr update_connection_;
@@ -143,14 +149,16 @@ private:
 
   struct deviceInfo_t
   {
-    common::Time last_update;
-    boost::weak_ptr<physics::Entity> entity_ptr;
-    std::string link_name = "";
+    common::Time last_update;                    // last time the unique device id was obtained
+    boost::weak_ptr<physics::Entity> entity_ptr; // handle to unique ranging device's link
+    std::string link_name = "";                  // unique link name of the ranging device
   };
 
   std::map<size_t, deviceInfo_t> dict_device_ids_;
 
   /// ranging ids
+  ros::Subscriber
+      subRangingIDs_; /// subsrcibing at global topic config_.rangingIDsTopic- std_msgs::UInt64MultiArray
   std::vector<size_t> rangingIDs_;
 
 }; // class UwbTwr_Plugin
@@ -218,8 +226,6 @@ void RosUwbTwr_plugin::LoadThread()
 {
   size_t const buffer_size = 10;
 
-  //ros::NodeHandle node_hdl_priv = ros::NodeHandle(config_.robot_namespace);
-
   ros::NodeHandle node_hdl("~");
   pub_twr_ = node_hdl.advertise<uwb_msgs::TwoWayRangeStamped>(config_.twrTopic, buffer_size);
   pubDeviceID_ = node_hdl.advertise<std_msgs::UInt64>("/twr_device_IDs", buffer_size);
@@ -232,7 +238,10 @@ void RosUwbTwr_plugin::LoadThread()
                                       buffer_size,
                                       &RosUwbTwr_plugin::callback_request_IDs,
                                       this);
-
+  subRangingIDs_ = node_hdl.subscribe(config_.rangingIDsTopic,
+                                      buffer_size,
+                                      &RosUwbTwr_plugin::callback_ranging_IDs,
+                                      this);
   ROS_INFO_STREAM("RosUwbTwr_plugin::Load(): uwb twr plugin published at: " << config_.twrTopic);
 
   request_device_IDs();
@@ -413,10 +422,10 @@ void RosUwbTwr_plugin::get_sdf_params(sdf::ElementPtr _sdf)
   getSdfParam(_sdf, "twrNoise", config_.twrNoise, 0.1f);
   getSdfParam(_sdf, "refreshRateIDs", config_.refreshRateIDs, 0.1f);
   getSdfParam(_sdf, "twrTopic", config_.twrTopic, std::string("/twr"));
+  getSdfParam(_sdf, "rangingIDsTopic", config_.rangingIDsTopic, std::string("/ranging_IDs"));
   getSdfParam(_sdf, "deviceIdTopic", config_.deviceIdTopic, std::string("/TWR_device_IDs"));
   getSdfParam(_sdf, "requestIdTopic", config_.requestIdTopic, std::string("/TWR_request_IDs"));
   getSdfParam(_sdf, "modelPrefix", config_.linkPrefix, std::string("twr"));
-  getSdfParam(_sdf, "robot_namespace", config_.robot_namespace, std::string(""));
   getSdfParam(_sdf, "deviceId", config_.deviceId, uint(0));
   getSdfParam(_sdf, "allBeaconsAreLOS", config_.allBeaconsAreLOS, false);
   getSdfParam(_sdf, "useRangingIDs", config_.useRangingIDs, true);
