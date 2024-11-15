@@ -1,7 +1,8 @@
 /*
  * Software License Agreement (Modified BSD License)
  *
- *  Copyright (c) 2024
+ *  Copyright (c) 2024 Roland Jung.
+ *  Control of Networked Systems, University of Klagenfurt, Austria.
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -63,7 +64,15 @@
 namespace gazebo {
 
 /**
- * @brief The RosUwbTwr_plugin class: A model plugin that refers to the pose of a model's link according to the naming convention: <linkPrefix>_<deviceID> using the parameters provided to the plugin (all parameters are listed in config_t.   
+ * @brief  The RosUwbTwr_plugin class: computing ranges between links.
+ * A model plugin that refers to the pose of a model's link according to the naming convention: <linkPrefix>_<deviceID> using the parameters provided to the plugin (all parameters are listed in config_t).   
+ * The plugin resolves the antenna pose of other ranging device through there unique IDs and the common <linkPrefix> and assuming a common antenna offset (needs to be set the same for all devices).
+ * Auto-identification: Therefore, the unique IDs need to resolved at runtime, by periodically requesting IDs on the ROS topic <requestIdTopic>. Upon a request, all plugins are sending their unique ID on the topic <deviceIdTopic>. If the unique ID is known, a timestamp is updated, which is needed to remove outdated devices again automatically. If a new unique ID was found, the plugin checks all links of all other models if their name matches the expected device name <linkPrefix>_<deviceID>. If a match was found the handle to that link is stored. Note: Consequntly, ranges are only computed among links attached to other models if <excludeLocalLinks> is set.
+ * The plugin support to compute ranges either to all modules (or a subset provided by the topic <rangingIDsTopic>) per update or one-by-one (sequentially) according to the flag <useRoundRobin>. 
+ * UWB can penetrate some material, therefore after computing the real antenna distance, occlusion are determined by computing the distance from two rays and by checking if they are coliding with any objects. This idea originates from [repository](https://github.com/valentinbarral/gazebosensorplugins). In contrast, we an not computing the (shortest) non-line-of-sight paths, it is either computational expensive or inexact. 
+ * The range measurement is models by: z = k*x + d + noise, which noise is white Gaussian, x is the true Euclidian distance between the antennas position, k is a <distanceBasedBias>, and d is a <constantBias>. Note: since the relative antenna orientation is known, the radiation pattern could be considered as well.
+ * The perturbed range measurement is published as [UwbAnchorArrayStamped.msg](https://github.com/aau-cns/uwb_msgs/blob/main/msgs/UwbAnchorArrayStamped.msg) from the package [uwb_msgs](https://github.com/aau-cns/uwb_msgs) 
+ * Conditionally, verbose ROS_INFO messages are provided by setting <verbose>
  */
 class RosUwbTwr_plugin : public ModelPlugin
 {
@@ -91,6 +100,7 @@ public:
     bool useRangingIDs = true;      // use a list of ranging ids
     bool useRoundRobin = true; // per update only one range to one device in the list is computed
     bool verbose = false;      // enables more ROS_INFO prints
+    bool excludeLocalLinks = true; // do not consider other ranging devices on model
 
     ignition::math::Vector3d antenna_offset
         = ignition::math::Vector3d::Zero; // offset of the antenna from the links origin.
@@ -431,6 +441,7 @@ void RosUwbTwr_plugin::get_sdf_params(sdf::ElementPtr _sdf)
   getSdfParam(_sdf, "useRangingIDs", config_.useRangingIDs, true);
   getSdfParam(_sdf, "useRoundRobin", config_.useRoundRobin, true);
   getSdfParam(_sdf, "verbose", config_.verbose, true);
+  getSdfParam(_sdf, "excludeLocalLinks", config_.excludeLocalLinks, true);
   {
     float x, y, z;
     getSdfParam(_sdf, "antenna_offset_x", x, 0.0f);
@@ -496,7 +507,7 @@ void RosUwbTwr_plugin::add_device(const size_t device_id)
   std::string link_name = std::string(config_.linkPrefix + "_" + std::to_string(device_id));
   for (auto &model_ptr : world_->Models()) {
     // scan for links that are not part of the model to range with:
-    if (model_ptr != this->model_) {
+    if (!config_.excludeLocalLinks || (config_.excludeLocalLinks && model_ptr != this->model_)) {
       for (auto &link_ptr : model_ptr->GetLinks()) {
         ROS_INFO_COND(config_.verbose,
                       "UwbTwr_Plugin[%u]::add_device([%zu]): link name=%s",

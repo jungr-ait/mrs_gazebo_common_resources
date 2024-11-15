@@ -429,3 +429,51 @@ After building, activate by adding the following to your robot definition.
     </gazebo>
   ...
 ```
+
+## UWB Two-Way-Ranging plugin
+
+### Description
+- Adds a ranging device to the model. It is a model plugin that refers to the pose of a model's link according to the naming convention: `<linkPrefix>_<deviceID>` using the parameters provided to the plugin (all parameters are listed in [config_t](./RosUwbTwr_plugin.cpp#L74). 
+
+The RosUwbTwr_plugin class is simply computing ranges between links.
+ * It is a model plugin that refers to the pose of a model's link according to the naming convention: `<linkPrefix>_<deviceID>` using the parameters provided to the plugin (all parameters are listed in config_t).   
+ * The plugin resolves the antenna pose of other ranging device through there unique IDs and the common `<linkPrefix>` and assuming a common antenna offset (needs to be set the same for all devices).
+ * Auto-identification: Therefore, the unique IDs need to resolved at runtime, by periodically requesting IDs on the ROS topic `<requestIdTopic>`. Upon a request, all plugins are sending their unique ID on the topic `<deviceIdTopic>`. If the unique ID is known, a timestamp is updated, which is needed to remove outdated devices again automatically. If a new unique ID was found, the plugin checks all links of all other models if their name matches the expected device name `<linkPrefix>_<deviceID>`. If a match was found the handle to that link is stored. Note: Consequntly, ranges are only computed among links attached to other models if `<excludeLocalLinks>` is set.
+ * The plugin support to compute ranges either to all modules (or a subset provided by the topic `<rangingIDsTopic>`) per update or one-by-one (sequentially) according to the flag `<useRoundRobin>`. 
+ * UWB can penetrate some material, therefore after computing the real antenna distance, occlusion are determined by computing the distance from two rays and by checking if they are coliding with any objects. This idea originates from [repository](https://github.com/valentinbarral/gazebosensorplugins). In contrast, we an not computing the (shortest) non-line-of-sight paths, it is either computational expensive or inexact. 
+ * The range measurement is models by: z = k*x + d + noise, which noise is white Gaussian, x is the true Euclidian distance between the antennas position, k is a `<distanceBasedBias>`, and d is a `<constantBias>`. Note: since the relative antenna orientation is known, the radiation pattern could be considered as well. 
+ * The perturbed range measurement is published as [UwbAnchorArrayStamped.msg](https://github.com/aau-cns/uwb_msgs/blob/main/msgs/UwbAnchorArrayStamped.msg) from the package [uwb_msgs](https://github.com/aau-cns/uwb_msgs).
+ * Conditionally, verbose ROS_INFO messages are provided by setting `<verbose>`.
+
+### Usage
+After building, activate by adding the following to your robot definition.
+
+```xml
+  ...
+  <link name="uwb_twr_<DEVICE_ID>_link">
+    ...
+  </link>
+  <plugin name="uwb_twr_<DEVICE_ID>_plugin" filename="libMrsGazeboCommonResources_RosUwbTwrPlugin.so">
+    <twrRate>10</twrRate>
+    <twrTopic>/twr<DEVICE_ID>/uwb_twr</twrTopic>
+    <deviceId><DEVICE_ID></deviceId>
+    <maxRange>80.0</maxRange>
+    <constantBias>0.0</constantBias>
+    <distanceBasedBias>1.0</distanceBasedBias>
+    <twrNoise>0.1</twrNoise>
+    <refreshRateIDs>0.1</refreshRateIDs>
+    <rangingIDsTopic>/twr<DEVICE_ID>/ranging_IDs</rangingIDsTopic>
+    <linkPrefix>uwb_twr</linkPrefix>
+    <allBeaconsAreLOS>1</allBeaconsAreLOS>
+    <useRangingIDs>1</useRangingIDs>
+    <useRoundRobin>1</useRoundRobin>
+    <verbose>0</verbose>
+    <excludeLocalLinks>0</excludeLocalLinks>
+    <antenna_offset_x>0.03</antenna_offset_x>
+    <antenna_offset_y>0.008</antenna_offset_y>
+    <antenna_offset_z>0.1</antenna_offset_z>
+  </plugin>
+  ...
+```
+
+
