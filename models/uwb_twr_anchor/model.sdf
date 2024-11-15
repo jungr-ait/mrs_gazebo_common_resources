@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="uwb_twr_anchor999">
+    <static>true</static>
+    <link name="uwb_twr_999_link">
+      <pose>0 0.0 0.0 0 0 0</pose>
+      <visual name="uwb_twr_999_visual">
+        <pose>0.04 0.01 0.05 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.08 0.02 0.1</size>
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <name>Gazebo/White</name>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+          </script>
+        </material>
+      </visual>
+      <collision name="uwb_twr_999_collision">
+        <pose>0.04 0.01 0.05 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.08 0.02 0.1</size>
+          </box>
+        </geometry>
+        <surface>
+          <contact>
+            <ode>
+              <min_depth>0.01</min_depth>
+              <max_vel>0.0</max_vel>
+            </ode>
+          </contact>
+          <friction>
+            <ode/>
+          </friction>
+        </surface>
+      </collision>
+    </link>
+    <plugin name="uwb_twr_999_plugin" filename="libMrsGazeboCommonResources_RosUwbTwrPlugin.so">
+      <twrRate>10</twrRate>
+      <twrTopic>/anchor1/uwb_twr</twrTopic>
+      <deviceId>999</deviceId>
+      <linkPrefix>uwb_twr</linkPrefix>
+      <antenna_offset_x>0.03</antenna_offset_x>
+      <antenna_offset_y>0.008</antenna_offset_y>
+      <antenna_offset_z>0.1</antenna_offset_z>
+      <allBeaconsAreLOS>0</allBeaconsAreLOS>
+      <verbose>0</verbose>
+      <useRoundRobin>1</useRoundRobin>
+    </plugin>
+  </model>
+</sdf>
