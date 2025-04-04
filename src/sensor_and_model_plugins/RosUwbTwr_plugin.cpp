@@ -58,8 +58,9 @@
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
-#include <common.h>
+#include "perlin_noise.h"
 #include <ignition/math.hh>
+#include <common.h>
 
 namespace gazebo {
 
@@ -98,9 +99,9 @@ public:
     uint deviceId = 0;              // unique id of the ranging device
     bool allBeaconsAreLOS = false;  // do not consider occlusions
     bool useRangingIDs = true;      // use a list of ranging ids
-    bool useRoundRobin = true; // per update only one range to one device in the list is computed
-    bool verbose = false;      // enables more ROS_INFO prints
-    bool excludeLocalLinks = true; // do not consider other ranging devices on model
+    bool useRoundRobin = true;      // per update only one range to one device in the list is computed
+    bool verbose = false;           // enables more ROS_INFO prints
+    bool excludeLocalLinks = true;  // do not consider other ranging devices on model
 
     ignition::math::Vector3d antenna_offset
         = ignition::math::Vector3d::Zero; // offset of the antenna from the links origin.
@@ -145,7 +146,8 @@ private:
 
   common::Time last_pub_time_;
   std::default_random_engine random_generator_;
-  std::normal_distribution<double> standard_normal_distribution_;
+  std::normal_distribution<double> standard_normal_distribution_; // standard_normal_distribution_(random_generator_)
+
   size_t ranging_cnt_ = 0;
   physics::RayShapePtr firstRay_,
       secondRay_; /// rays between the antennas A and B, ray A->B, ray B->A
@@ -205,10 +207,12 @@ void RosUwbTwr_plugin::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
     }
   }
 
-  GZ_ASSERT(link_,
-            "RosUwbTwr_plugin::Load(" + std::to_string(config_.deviceId)
+  if(!link_) {
+    ROS_FATAL_STREAM("RosUwbTwr_plugin::Load(" + std::to_string(config_.deviceId)
                 + "): FAILURE! Could not find a link containing [" + link_name
                 + "] attached to model  " + model_->URI().Str());
+    return;
+  }
 
   // Init ROS
   if (ros::isInitialized()) {
